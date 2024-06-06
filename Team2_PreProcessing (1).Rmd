@@ -1,0 +1,424 @@
+```{r}
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(zoo)
+library(DescTools)
+library(caret)
+library(gplots)
+
+```
+
+
+```{r}
+# Importing the Historic Property Data
+
+historic_property_data <- read_csv("historic_property_data.csv")
+# View(historic_property_data)
+
+```
+
+```{r}
+
+typeof(historic_property_data)
+
+```
+
+
+```{r}
+
+# Exploring the values in the dataframe
+
+head(historic_property_data)
+dim(historic_property_data)
+summary(historic_property_data)
+str(historic_property_data)
+
+```
+
+```{r}
+
+names(historic_property_data)
+
+```
+
+
+
+```{r}
+
+# Removing ind_arms_length = False to avoid the skew/bias
+
+historic_property_data <- historic_property_data %>%
+  filter(ind_arms_length == TRUE)
+
+```
+
+```{r}
+
+# Updating char_gar1_size values
+
+historic_property_data$char_gar1_size[historic_property_data$char_gar1_size==2] <- 1
+historic_property_data$char_gar1_size[historic_property_data$char_gar1_size==4] <- 3
+historic_property_data$char_gar1_size[historic_property_data$char_gar1_size==6] <- 5
+
+```
+
+```{r}
+
+codebook <- read.csv("codebook.csv")
+result <- subset(codebook, var_is_predictor == FALSE, select = var_name_standard)
+# Match the values in result to historic_property_data dataframe column names
+cols_to_drop <- intersect(names(historic_property_data), result$var_name_standard)
+
+# Drop those columns with names in the result dataframe
+historic_property_data <- historic_property_data[, !names(historic_property_data) %in% cols_to_drop]
+names(historic_property_data)
+
+```
+
+```{r}
+
+# Calculate the number of missing values in each column
+missing_values <- colSums(is.na(historic_property_data))
+
+# Create a data frame with column names and missing values
+missing_df <- data.frame(column_name = names(missing_values), missing_values = missing_values)
+
+# Order the data frame by the number of missing values in descending order
+missing_df <- missing_df[order(-missing_df$missing_values),]
+
+# Output the sorted data frame
+missing_df
+
+
+```
+
+```{r}
+
+# Calculates the number of unique values in each column of the data frame [This will help us identify columns with a small number of unique values, which may be categorical variables. We can use this information to decide how to preprocess the data before modeling]
+
+unique_counts <- sapply(historic_property_data, function(x) length(unique(x)))
+unique_counts
+
+str(historic_property_data)
+
+```
+
+```{r}
+
+# Code to convert the datatype of the variables as seen appropriate, this will help us ensure that the data is in the correct format before we perform any analysis on it.
+
+historic_property_data <- historic_property_data %>% 
+  mutate(across(c("meta_town_code", "meta_nbhd"), as.logical))
+
+historic_property_data <- historic_property_data %>% 
+  mutate(across(c("geo_ohare_noise", "geo_floodplain", "geo_withinmr100", "geo_withinmr101300"), as.logical))
+
+historic_property_data <- historic_property_data %>% 
+  mutate(across(c("char_heat", "char_oheat", "char_air", "char_attic_type", 
+                  "char_tp_plan", "char_tp_dsgn", "char_gar1_size",
+                  "char_gar1_cnst", "char_gar1_att", "char_gar1_area",
+                  "char_use", "char_type_resd", "char_attic_fnsh",
+                  "char_porch", "char_apts", "char_ext_wall", "char_roof_cnst", "char_bsmt", "char_bsmt_fin",  "geo_fs_flood_factor", "geo_fs_flood_risk_direction"), as.factor))
+
+col = colnames(historic_property_data)
+str(historic_property_data)
+
+```
+
+
+
+
+```{r}
+
+# Plotting different columns of the data frame to observe the distribution of the data along with its quartiles and outliers
+
+#right skew sale price
+ggplot(data = historic_property_data, aes(x = sale_price))+
+  geom_histogram(bins = 80, col = "white", fill = "blue")
+
+
+for (i in col) {
+  if (is.integer(historic_property_data[[i]])) {
+    print(
+      ggplot(data = historic_property_data) +
+        geom_histogram(aes(x = historic_property_data[[i]])) +
+        ggtitle(paste("Histogram for", i))
+    )
+  } else {
+    print(
+      ggplot(data = historic_property_data) +
+        geom_bar(aes(x = historic_property_data[[i]])) +
+        ggtitle(paste("Bar Plot for", i))
+    )
+  }
+}
+
+for (i in col) {
+  if (is.numeric(historic_property_data[[i]])) {
+    print(
+      ggplot(data = historic_property_data) +
+        geom_boxplot(aes(x = historic_property_data[[i]])) +
+        ggtitle(paste("Box Plot for", i))
+    )
+  }
+}
+
+```
+
+
+
+```{r}
+
+unique_counts <- sapply(historic_property_data, function(x) length(unique(x)))
+unique_counts
+
+```
+
+```{r}
+
+# Dropping duplicate rows 
+# historic_property_data[duplicated(historic_property_data),]
+
+historic_property_data <- historic_property_data[!duplicated(historic_property_data),]
+
+```
+
+
+```{r}
+
+# Converting the numeric to categorical data
+
+historic_property_data$char_type_resd[historic_property_data$char_type_resd %in% c("5", "6", "7", "8", "9")] <- "5"
+historic_property_data$char_type_resd <- factor(historic_property_data$char_type_resd, levels = c("1", "2", "3", "4", "5"))
+
+```
+
+
+```{r}
+
+# Grouping by char_apts and summarize the values of meta_nhbd column
+
+historic_property_data %>%
+  group_by(char_apts) %>%
+  summarise(meta_nbhd = first(na.omit(meta_nbhd)), count = n())
+
+```
+
+```{r}
+
+head(historic_property_data$char_apts)
+typeof(historic_property_data$char_apts)
+
+unique(historic_property_data$char_apts)
+
+str(historic_property_data)
+class(historic_property_data$char_apts)
+
+```
+
+```{r}
+
+# Code to create a new variable towns_with_null_char_apts that contains the values of the meta_town_code column of the data frame df where the corresponding value in the char_apts column is missing, and then prints the unique values of the towns_with_null_char_apts variable
+
+towns_with_null_char_apts <- historic_property_data$meta_town_code[is.na(historic_property_data$char_apts)]
+unique(towns_with_null_char_apts)
+
+```
+
+```{r}
+
+
+# historic_property_data <- historic_property_data %>% 
+#   group_by(meta_nbhd, meta_town_code) %>% 
+#   mutate_all(na.locf, na.rm = FALSE, .groups = "drop")
+
+
+```
+
+```{r}
+
+# Calculate the number of missing values in each column
+missing_values <- colSums(is.na(historic_property_data))
+
+# Create a data frame with column names and missing values
+missing_df <- data.frame(column_name = names(missing_values), missing_values = missing_values)
+
+# Order the data frame by the number of missing values in descending order
+missing_df <- missing_df[order(-missing_df$missing_values),]
+
+# Output the sorted data frame
+missing_df
+
+```
+
+```{r}
+
+# columns with more missing values
+coulmnsToDrop <- c("char_apts", "char_porch", "char_attic_fnsh", "char_tp_dsgn")
+
+# drop the columns with more missing values
+historic_property_data <- historic_property_data[, !names(historic_property_data) %in% coulmnsToDrop]
+names(historic_property_data)
+
+
+```
+
+
+```{r}
+
+# replace missing values with non-missing values in the same location group
+
+library(tidyr)
+library(dplyr)
+library(zoo)
+
+historic_property_data <- historic_property_data %>% 
+  group_by(meta_nbhd, meta_town_code) %>% 
+  mutate_all(na.locf, na.rm = FALSE, .groups = "drop")
+
+
+```
+
+```{r}
+
+
+# Calculate the number of missing values in each column
+missing_values <- colSums(is.na(historic_property_data))
+
+# Create a data frame with column names and missing values
+missing_df <- data.frame(column_name = names(missing_values), missing_values = missing_values)
+
+# Order the data frame by the number of missing values in descending order
+missing_df <- missing_df[order(-missing_df$missing_values),]
+
+# Output the sorted data frame
+missing_df
+
+```
+```{r}
+
+# # Code to impute missing values in a data frame by replacing them with the median of the non-missing values for each variable within each group.
+# 
+# vars_to_impute <- character(0)
+# 
+# for (i in names(historic_property_data)) {
+#   if (sum(is.na(historic_property_data[[i]])) > 0) {
+#     vars_to_impute <- c(vars_to_impute, i)
+#   }
+# }
+#   
+# # Function Arguments:
+# #   data: a data frame
+# #   group_var: a character string specifying the variable to group by
+# #   vars_to_impute: a character vector specifying the variables to impute missing values for
+# # Returns:
+# #   an imputed data frame
+# 
+# impute_missing_values <- function(data, group_var, vars_to_impute) {
+#   # Group by the specified variable
+#   grouped_data <- data %>% group_by({{ group_var }})
+#   
+#   # Impute missing values for each variable
+#   for (var in vars_to_impute) {
+#     grouped_data <- grouped_data %>%
+#       mutate(
+#         {{ var }} := ifelse(is.na({{ var }}), median({{ var }}, na.rm = TRUE), {{ var }})
+#       )
+#   }
+#   
+#   # Ungroup the data
+#   ungrouped_data <- grouped_data %>% ungroup()
+#   
+#   return(ungrouped_data)
+# }
+# 
+# historic_property_data <- impute_missing_values(historic_property_data, meta_nbhd, vars_to_impute = vars_to_impute)
+# 
+# 
+# sum(is.na(historic_property_data))
+# sort(colSums(is.na(historic_property_data)), decreasing = TRUE)
+
+```
+
+
+```{r}
+
+# Applying log transformation to price
+# ggplot(data=historic_property_data)+
+#  geom_histogram(aes(x = log1p(sale_price)))
+
+```
+
+
+```{r}
+
+# Determining the correlation between the numeric variables
+
+numeric_cols <- sapply(historic_property_data, is.numeric)
+cor_matrix <- cor(historic_property_data[, numeric_cols])
+cor_matrix[is.na(cor_matrix)] <- 0
+cor_matrix[cor_matrix == Inf] <- 0
+cor_matrix[cor_matrix == -Inf] <- 0
+heatmap.2(cor_matrix, trace="none", col=redgreen(75), dendrogram="none", margins=c(5,5))
+
+```
+```{r}
+
+# Winsorizing 
+
+numeric_cols <- sapply(historic_property_data, is.numeric)
+historic_property_data[numeric_cols] <- Winsorize(historic_property_data[numeric_cols], probs = c(0.01, 0.99), na.rm = TRUE)
+
+
+```
+
+```{r}
+
+# Removing negative price values if any
+historic_property_data$predicted_price <- ifelse(historic_property_data$sale_price < 0, 0, historic_property_data$sale_price)
+
+ordered_sale_price <- historic_property_data$sale_price[order(historic_property_data$sale_price)]
+print(ordered_sale_price)
+
+sum(historic_property_data$sale_price == 0, na.rm = TRUE)
+
+```
+
+
+```{r}
+
+# Feature Scaling using preProcess()
+historic_property_data <- predict(preProcess(historic_property_data, method = c("center", "scale")), historic_property_data)
+
+```
+
+```{r}
+
+# Determining the correlation between the numeric variables
+
+numeric_cols <- sapply(historic_property_data, is.numeric)
+cor_matrix <- cor(historic_property_data[, numeric_cols])
+cor_matrix[is.na(cor_matrix)] <- 0
+cor_matrix[cor_matrix == Inf] <- 0
+cor_matrix[cor_matrix == -Inf] <- 0
+heatmap.2(cor_matrix, trace="none", col=redgreen(75), dendrogram="none", margins=c(5,5))
+
+```
+```{r}
+
+# Export the data frame to a CSV file
+write.csv(historic_property_data, "preprocessed_historic_property_data.csv")
+
+```
+
+
+
+
+
+
+
+
+
+
