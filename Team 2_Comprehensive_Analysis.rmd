@@ -1,0 +1,905 @@
+# Preprocessing data
+
+## Load Packages
+
+```{r}
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(zoo)
+library(DescTools)
+library(caret)
+library(gplots)
+library(glmnet)
+install.packages("car")
+library(caret)
+library(rpart)
+library(rpart.plot)
+install.packages("neuralnet")
+library(neuralnet)
+
+
+```
+
+
+
+## Import Historic Property Data
+
+```{r}
+
+# Importing the Historic Property Data
+
+historic_property_data <- read_csv("historic_property_data.csv")
+
+```
+## Exploring the data
+
+```{r}
+
+typeof(historic_property_data)
+
+```
+
+
+```{r}
+
+# Exploring the values in the dataframe
+
+head(historic_property_data)
+dim(historic_property_data)
+summary(historic_property_data)
+str(historic_property_data)
+
+```
+
+```{r}
+
+names(historic_property_data)
+
+```
+
+## Data Cleaning
+
+```{r}
+
+# Removing ind_arms_length = False to avoid the skew/bias. ind_arms_length = False refers to the properties transactions done not independently and with any special relationship, such as a family or business connection
+
+historic_property_data <- historic_property_data %>%
+  filter(ind_arms_length == TRUE)
+
+```
+
+```{r}
+
+# Dropping the non-predictor variables
+
+codebook <- read.csv("codebook.csv")
+result <- subset(codebook, var_is_predictor == FALSE, select = var_name_standard)
+
+# Match the values in result to historic_property_data dataframe column names
+cols_to_drop <- intersect(names(historic_property_data), result$var_name_standard)
+
+# Drop those columns with names in the result dataframe
+historic_property_data <- historic_property_data[, !names(historic_property_data) %in% cols_to_drop]
+names(historic_property_data)
+
+```
+
+
+
+```{r}
+
+# Calculates the number of unique values in each column of the data frame [This will help us identify columns with a small number of unique values, which may be categorical variables. We can use this information to decide how to preprocess the data before modeling]
+
+unique_counts <- sapply(historic_property_data, function(x) length(unique(x)))
+unique_counts
+
+str(historic_property_data)
+
+```
+```{r}
+# Updating char_gar1_size values
+
+historic_property_data$char_gar1_size[historic_property_data$char_gar1_size==2] <- 1
+historic_property_data$char_gar1_size[historic_property_data$char_gar1_size==4] <- 3
+historic_property_data$char_gar1_size[historic_property_data$char_gar1_size==6] <- 5
+
+```
+
+
+## Convert the data type of variables
+
+```{r}
+
+# Code to convert the datatype of the variables as seen appropriate, this will help us ensure that the data is in the correct format before we perform any analysis on it.
+
+historic_property_data <- historic_property_data %>% 
+  mutate(across(c("geo_ohare_noise", "geo_floodplain", "geo_withinmr100", "geo_withinmr101300"), as.logical))
+
+historic_property_data <- historic_property_data %>% 
+  mutate(across(c("char_heat", "char_oheat", "char_air", "char_attic_type", 
+                  "char_tp_plan", "char_tp_dsgn", "char_gar1_size",
+                  "char_gar1_cnst", "char_gar1_att", "char_gar1_area",
+                  "char_use", "char_type_resd", "char_attic_fnsh",
+                  "char_porch", "char_apts", "char_ext_wall", "char_roof_cnst", "char_bsmt", "char_bsmt_fin",  "geo_fs_flood_factor", "geo_fs_flood_risk_direction"), as.factor))
+
+col = colnames(historic_property_data)
+str(historic_property_data)
+
+```
+
+## Drop duplicate Rows
+
+```{r}
+
+# Dropping duplicate rows 
+
+historic_property_data <- historic_property_data[!duplicated(historic_property_data),]
+
+```
+
+## Convert char_type_resd variable values
+
+```{r}
+
+# Converting the numeric to categorical data
+
+historic_property_data$char_type_resd[historic_property_data$char_type_resd %in% c("5", "6", "7", "8", "9")] <- "5"
+historic_property_data$char_type_resd <- factor(historic_property_data$char_type_resd, levels = c("1", "2", "3", "4", "5"))
+
+
+```
+
+```{r}
+str(historic_property_data)
+```
+
+## Summarize values based on meta_nhbd
+
+```{r}
+
+# Grouping by char_apts and summarize the values of meta_nhbd column
+
+historic_property_data %>%
+  group_by(char_apts) %>%
+  summarise(meta_nbhd = first(na.omit(meta_nbhd)), count = n())
+
+```
+## Calculate missing values 
+
+```{r}
+
+# Calculating the number of missing values in each column 
+missing_values <- colSums(is.na(historic_property_data))
+
+# Create a data frame with column names and missing values
+missing_df <- data.frame(column_name = names(missing_values), missing_values = missing_values)
+
+# Order the data frame by the number of missing values in descending order
+missing_df <- missing_df[order(-missing_df$missing_values),]
+
+# Output the sorted data frame
+missing_df
+
+```
+## Drop columns with high number of missing values
+
+```{r}
+
+# columns with more missing values
+coulmnsToDrop <- c("char_apts", "char_porch", "char_attic_fnsh", "char_tp_dsgn", "geo_fs_flood_risk_direction")
+
+# drop the columns with more missing values
+historic_property_data <- historic_property_data[, !names(historic_property_data) %in% coulmnsToDrop]
+names(historic_property_data)
+
+
+```
+
+## Impute missing values using values in same location group
+
+```{r}
+
+# Replace missing values with non-missing values in the same location group
+
+historic_property_data <- historic_property_data %>% 
+  group_by(meta_nbhd, meta_town_code) %>% 
+  mutate_at(vars(-group_cols()), ~na.locf(., na.rm = FALSE))
+
+
+```
+
+## Calculate missing values after initial imputation on location group
+
+```{r}
+
+
+# Calculate the number of missing values in each column after imputing the missing values based on the location group
+missing_values <- colSums(is.na(historic_property_data))
+
+# Create a data frame with column names and missing values
+missing_df <- data.frame(column_name = names(missing_values), missing_values = missing_values)
+
+# Order the data frame by the number of missing values in descending order
+missing_df <- missing_df[order(-missing_df$missing_values),]
+
+# Output the sorted data frame
+missing_df
+
+```
+## Impute remaining values 
+
+```{r}
+
+# Identify character columns with missing values
+
+character_cols_with_missing <- colnames(historic_property_data)[sapply(historic_property_data, is.character) & apply(historic_property_data, 2, function(x) any(is.na(x)))]
+
+# Define a function to calculate the mode
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Impute missing values in character columns with mode
+historic_property_data[character_cols_with_missing] <- lapply(historic_property_data[character_cols_with_missing], function(x) ifelse(is.na(x), Mode(x), x))
+
+colSums(is.na(historic_property_data))
+
+```
+
+```{r}
+
+# Identify numeric columns with missing values
+
+numeric_cols_with_missing <- colnames(historic_property_data)[sapply(historic_property_data, is.numeric) & apply(historic_property_data, 2, function(x) any(is.na(x)))]
+
+# Impute missing values in numeric columns with median
+
+historic_property_data[, numeric_cols_with_missing] <- lapply(historic_property_data[, numeric_cols_with_missing], function(x) ifelse(is.na(x), median(x, na.rm = TRUE), x))
+
+colSums(is.na(historic_property_data))
+
+```
+
+```{r}
+
+# Identify logical columns with missing values
+logical_cols_with_missing <- colnames(historic_property_data)[sapply(historic_property_data, is.logical) & apply(historic_property_data, 2, function(x) any(is.na(x)))]
+
+# Define a function to calculate the mode for logical variables
+ModeLogical <- function(x) {
+  levels <- levels(factor(x))
+  levels[which.max(tabulate(match(factor(x), levels)))]
+}
+
+# Impute missing values in logical columns with mode
+historic_property_data[, logical_cols_with_missing] <- lapply(historic_property_data[, logical_cols_with_missing], function(x) ifelse(is.na(x), ModeLogical(x), x))
+
+colSums(is.na(historic_property_data))
+
+```
+
+
+```{r}
+
+# Identify factor columns with missing values
+factor_cols_with_missing <- colnames(historic_property_data)[sapply(historic_property_data, is.factor) & apply(historic_property_data, 2, function(x) any(is.na(x)))]
+
+# Define a function to calculate the mode for factor variables
+ModeFactor <- function(x) {
+  levels <- levels(factor(x))
+  levels[which.max(tabulate(match(factor(x), levels)))]
+}
+
+# Impute missing values in factor columns with mode
+historic_property_data[, factor_cols_with_missing] <- lapply(historic_property_data[, factor_cols_with_missing], function(x) ifelse(is.na(x), ModeFactor(x), x))
+
+colSums(is.na(historic_property_data))
+
+```
+
+```{r}
+
+str(historic_property_data)
+
+```
+
+## Winsorization
+
+```{r}
+
+# Winsorizing 
+
+# Identify numeric columns
+numeric_cols <- sapply(historic_property_data, is.numeric)
+
+# Specify columns to exclude from winsorization
+cols_to_exclude <- c('meta_nbhd', 'meta_town_code')
+
+# Identify numeric columns to winsorize
+cols_to_winsorize <- names(historic_property_data)[numeric_cols & !(names(historic_property_data) %in% cols_to_exclude)]
+
+# Winsorize numeric columns
+historic_property_data[cols_to_winsorize] <- Winsorize(historic_property_data[cols_to_winsorize], probs = c(0.01, 0.99), na.rm = TRUE)
+
+head(historic_property_data)
+
+```
+
+## Remove negative price values
+
+```{r}
+
+# Removing negative price values if any
+historic_property_data$predicted_price <- ifelse(historic_property_data$sale_price < 0, 0, historic_property_data$sale_price)
+
+ordered_sale_price <- historic_property_data$sale_price[order(historic_property_data$sale_price)]
+print(head(ordered_sale_price))
+
+sum(historic_property_data$sale_price == 0, na.rm = TRUE)
+
+```
+## Feature Scaling
+
+```{r}
+
+# Feature Scaling using preProcess()
+
+min_price <- min(historic_property_data$sale_price)
+max_price <- max(historic_property_data$sale_price)
+
+# Identify numeric columns (excluding cols_to_exclude)
+numeric_cols_to_scale <- colnames(historic_property_data)[sapply(historic_property_data, is.numeric) & !colnames(historic_property_data) %in% cols_to_exclude]
+
+# Create a preprocessing object
+preprocess_obj <- preProcess(historic_property_data[, numeric_cols_to_scale], method = "range")
+
+# Scale the numeric columns using the preprocessing object
+scaled_data <- predict(preprocess_obj, newdata = historic_property_data[, numeric_cols_to_scale])
+
+# Add back the excluded columns to the scaled dataframe
+scaled_data <- cbind(scaled_data, historic_property_data[, cols_to_exclude])
+
+# Combine the scaled numeric columns and the excluded columns back to the original dataframe
+historic_property_data <- cbind(scaled_data, historic_property_data[, setdiff(colnames(historic_property_data), c(numeric_cols_to_scale, cols_to_exclude))])
+
+
+head(historic_property_data)
+
+scaled_sale_price <- historic_property_data[,'sale_price']
+
+```
+
+# Variable Selection
+
+## Create data frame 
+
+```{r}
+
+# Drop column geo_school_elem_district & geo_school_hs_district
+historic_property_data <- subset(historic_property_data, select = -c(predicted_price, geo_school_elem_district, geo_school_hs_district))
+
+# Display the structure of the modified data frame
+str(historic_property_data)
+
+# check if any missing values
+sum(is.na(historic_property_data))
+```
+
+## Convert data frame of predictors to matrix, since we are running lasso regression
+
+```{r}
+# convert to matrix and create dummy variables for character variables 
+x <- model.matrix(sale_price~., historic_property_data)[,-1]
+
+head(x)
+
+# outcome 
+y <- historic_property_data$sale_price
+
+```
+
+## Data partition 
+
+```{r}
+set.seed(1)
+
+# row number of the training set
+train.index <- sample(c(1:dim(x)[1]), dim(x)[1] * 0.5)
+
+# predictors in the training set 
+head(x[train.index,])
+
+
+# outcome in the training set 
+head(y[train.index])
+
+
+## row numbers of the test set 
+test.index <- setdiff(1:nrow(x), train.index)
+
+# predictors in the test set 
+head(x[test.index,])
+
+# outcome in the test set 
+y.test <- y[test.index]
+head(y.test)
+
+```
+
+## Lasso regression 
+
+```{r}
+
+# fit lasso regression 
+fit <- glmnet(x[train.index,], y[train.index], alpha = 1)
+
+dim(x[train.index,])
+
+fit
+
+len_lambda <- length(fit$lambda)
+
+#NOTE: Below functions are for getting lambda large, medium, & small
+  #lambda.large <- fit$lambda[1]
+  #lambda.medium <- fit$lambda[38]
+  #lambda.small <- fit$lambda[79]
+
+# Dimensions of the coefficient matrix in the fitted Lasso regression model 'fit'
+dim(coef(fit))[1]
+
+# plot coefficients on log of lambda values
+plot(fit, xvar = "lambda")
+
+
+```
+
+## Model with a small lambda value 
+```{r}
+# return a small lambda value 
+lambda.small <- fit$lambda[len_lambda]
+
+# lasso regression coefficients 
+coef.lambda.small <- predict(fit, s = lambda.small, type = "coefficients")[1:dim(coef(fit))[1],]
+coef.lambda.small
+
+# non-zero coefficient estimates (greatest number of predictors)  
+coef.lambda.small[coef.lambda.small!=0]
+
+# make predictions for records in the test set 
+pred.lambda.small <- predict(fit, s = lambda.small, newx=x[test.index,])
+head(pred.lambda.small)
+
+# MSE in the test set 
+mean((y.test-pred.lambda.small)^2)
+
+```
+
+## Model with a medium-sized lambda value
+```{r}
+# return a medium lambda value 
+lambda.medium <- fit$lambda[38]
+lambda.medium
+
+# lasso regression coefficients  
+coef.lambda.medium <- predict(fit, s = lambda.medium, type = "coefficients")[1:dim(coef(fit))[1],]
+coef.lambda.medium
+
+# non-zero coefficient estimates  
+coef.lambda.medium[coef.lambda.medium!=0]
+
+# make predictions for records the test set 
+pred.lambda.medium <- predict(fit, s = lambda.medium, newx=x[test.index,])
+head(pred.lambda.medium)
+
+# MSE in the test set 
+mean((y.test-pred.lambda.medium)^2)
+
+```
+
+## Model with a large lambda value
+```{r}
+# return a large lambda value 
+lambda.large <- fit$lambda[1]
+
+# lasso regression coefficients  
+coef.lambda.large <- predict(fit, s = lambda.large, type = "coefficients")[1:dim(coef(fit))[1],]
+coef.lambda.large
+
+# non-zero coefficient estimates (the least number of predictors)  
+coef.lambda.large[coef.lambda.large!=0]
+
+# make predictions for records in the test set 
+pred.lambda.large <- predict(fit, s = lambda.large, newx=x[test.index,])
+head(pred.lambda.large)
+
+# MSE in the test set 
+mean((y.test-pred.lambda.large)^2)
+
+```
+
+## Cross-validation to choose lambda 
+```{r}
+# set seed 
+set.seed(1)
+
+# 10-fold cross validation (default)
+cv.fit <- cv.glmnet(x[train.index,], y[train.index], alpha = 1, type.measure = "mse")
+
+# plot the cross-validated MSE for each lambda 
+plot(cv.fit)
+
+# lambda that corresponds to the lowest cross-validated MSE 
+lambda.best <- cv.fit$lambda.min
+lambda.best
+
+```
+## model with the best lambda 
+```{r}
+# lasso regression coefficients  
+coef.lambda.best <- predict(cv.fit, s = lambda.best, type = "coefficients")[1:dim(coef(fit))[1],]
+coef.lambda.best
+
+# non-zero coefficients 
+coef.lambda.best[coef.lambda.best!=0]
+
+```
+```{r}
+# Assuming coef.lambda.best is a vector
+non_zero_coefficients <- coef.lambda.best[coef.lambda.best != 0]
+
+# Get the names of columns corresponding to non-zero coefficients
+non_zero_column_names <- names(non_zero_coefficients)
+
+columns = c("char_age", "char_beds","char_frpl","char_fbath","char_hbath", "char_bldg_sf", "char_rooms",  "econ_tax_rate","econ_midincome","meta_nbhd",  "char_ext_wall","char_roof_cnst", "char_bsmt", "char_bsmt_fin", "char_heat", "char_oheat", "char_air", "char_attic_type","char_tp_plan", "char_gar1_size", "char_use", "char_type_resd", "geo_ohare_noise", "geo_floodplain", "geo_fs_flood_factor", "geo_withinmr100","geo_withinmr101300", "ind_garage", "char_hd_sf", "char_gar1_cnst", "char_gar1_area", "sale_price")
+length(columns)
+
+historic_property_data <- historic_property_data[,columns]
+
+```
+
+
+#Preprocessing Test Data
+
+```{r}
+#Preprocessing test data file
+
+#read test set
+predict_property_data <- read.csv("predict_property_data.csv")
+
+head(predict_property_data)
+
+
+codebook <- read.csv("codebook.csv")
+result <- subset(codebook, var_is_predictor == FALSE, select = var_name_standard)
+
+# Match the values in result to predict_property_data dataframe column names
+cols_to_drop <- intersect(names(predict_property_data), result$var_name_standard)
+
+# Drop those columns with names in the result dataframe
+predict_property_data <- predict_property_data[, !names(predict_property_data) %in% cols_to_drop]
+names(predict_property_data)
+
+
+predict_property_data$char_gar1_size[predict_property_data$char_gar1_size==2] <- 1
+predict_property_data$char_gar1_size[predict_property_data$char_gar1_size==4] <- 3
+predict_property_data$char_gar1_size[predict_property_data$char_gar1_size==6] <- 5
+
+
+predict_property_data <- predict_property_data %>% 
+  mutate(across(c("geo_ohare_noise", "geo_floodplain", "geo_withinmr100", "geo_withinmr101300"), as.logical))
+
+predict_property_data <- predict_property_data %>% 
+  mutate(across(c("char_heat", "char_oheat", "char_air", "char_attic_type", 
+                  "char_tp_plan", "char_tp_dsgn", "char_gar1_size",
+                  "char_gar1_cnst", "char_gar1_att", "char_gar1_area",
+                  "char_use", "char_type_resd", "char_attic_fnsh",
+                  "char_porch", "char_apts", "char_ext_wall", "char_roof_cnst", "char_bsmt", "char_bsmt_fin",  "geo_fs_flood_factor", "geo_fs_flood_risk_direction"), as.factor))
+
+predict_property_data$char_oheat <- as.character(predict_property_data$char_oheat)
+predict_property_data$char_oheat <- factor(predict_property_data$char_oheat, levels = c("1", "2", "5"))
+
+
+
+str(predict_property_data)
+
+predict_property_data$char_type_resd[predict_property_data$char_type_resd %in% c("5", "6", "7", "8", "9")] <- "5"
+predict_property_data$char_type_resd <- factor(predict_property_data$char_type_resd, levels = c("1", "2", "3", "4", "5"))
+
+# columns with more missing values
+coulmnsToDrop <- c("char_apts", "char_porch", "char_attic_fnsh", "char_tp_dsgn", 'geo_school_elem_district', 'geo_school_hs_district', 'geo_fs_flood_risk_direction', "char_gar1_att","ind_arms_length")
+
+
+# drop the columns with more missing values
+predict_property_data <- predict_property_data[, !names(predict_property_data) %in% coulmnsToDrop]
+names(predict_property_data)
+
+# Replace missing values with non-missing values in the same location group
+
+predict_property_data <- predict_property_data %>% 
+  group_by(meta_nbhd, meta_town_code) %>% 
+  mutate_at(vars(-group_cols()), ~na.locf(., na.rm = FALSE))
+
+character_cols_with_missing <- colnames(predict_property_data)[sapply(predict_property_data, is.character) & apply(predict_property_data, 2, function(x) any(is.na(x)))]
+
+# Define a function to calculate the mode
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Impute missing values in character columns with mode
+predict_property_data[character_cols_with_missing] <- lapply(predict_property_data[character_cols_with_missing], function(x) ifelse(is.na(x), Mode(x), x))
+
+
+# Identify numeric columns with missing values
+
+numeric_cols_with_missing <- colnames(predict_property_data)[sapply(predict_property_data, is.numeric) & apply(predict_property_data, 2, function(x) any(is.na(x)))]
+
+# Impute missing values in numeric columns with median
+
+predict_property_data[, numeric_cols_with_missing] <- lapply(predict_property_data[, numeric_cols_with_missing], function(x) ifelse(is.na(x), median(x, na.rm = TRUE), x))
+
+
+
+# Identify logical columns with missing values
+logical_cols_with_missing <- colnames(predict_property_data)[sapply(predict_property_data, is.logical) & apply(predict_property_data, 2, function(x) any(is.na(x)))]
+
+# Define a function to calculate the mode for logical variables
+ModeLogical <- function(x) {
+  levels <- levels(factor(x))
+  levels[which.max(tabulate(match(factor(x), levels)))]
+}
+
+# Impute missing values in logical columns with mode
+predict_property_data[, logical_cols_with_missing] <- lapply(predict_property_data[, logical_cols_with_missing], function(x) ifelse(is.na(x), ModeLogical(x), x))
+
+
+# Identify factor columns with missing values
+factor_cols_with_missing <- colnames(predict_property_data)[sapply(predict_property_data, is.factor) & apply(predict_property_data, 2, function(x) any(is.na(x)))]
+
+# Define a function to calculate the mode for factor variables
+ModeFactor <- function(x) {
+  levels <- levels(factor(x))
+  levels[which.max(tabulate(match(factor(x), levels)))]
+}
+
+# Impute missing values in factor columns with mode
+predict_property_data[, factor_cols_with_missing] <- lapply(predict_property_data[, factor_cols_with_missing], function(x) ifelse(is.na(x), ModeFactor(x), x))
+
+
+# Winsorizing 
+
+# Identify numeric columns
+numeric_cols <- sapply(predict_property_data, is.numeric)
+
+# Specify columns to exclude from winsorization
+cols_to_exclude <- c('meta_nbhd', 'meta_town_code', 'pid')
+
+# Identify numeric columns to winsorize
+cols_to_winsorize <- names(predict_property_data)[numeric_cols & !(names(predict_property_data) %in% cols_to_exclude)]
+
+# Winsorize numeric columns
+predict_property_data[cols_to_winsorize] <- Winsorize(predict_property_data[cols_to_winsorize], probs = c(0.01, 0.99), na.rm = TRUE)
+
+# Feature Scaling using preProcess()
+
+numeric_cols_to_scale <- colnames(predict_property_data)[sapply(predict_property_data, is.numeric) & !colnames(predict_property_data) %in% cols_to_exclude]
+
+# Create a preprocessing object
+preprocess_obj <- preProcess(predict_property_data[, numeric_cols_to_scale], method = "range")
+
+# Scale the numeric columns using the preprocessing object
+scaled_data <- predict(preprocess_obj, newdata = predict_property_data[, numeric_cols_to_scale])
+
+# Add back the excluded columns to the scaled dataframe
+scaled_data <- cbind(scaled_data, predict_property_data[, cols_to_exclude])
+
+# Combine the scaled numeric columns and the excluded columns back to the original dataframe
+predict_property_data <- cbind(scaled_data, predict_property_data[, setdiff(colnames(predict_property_data), c(numeric_cols_to_scale, cols_to_exclude))])
+
+# predict_property_data$geo_fs_flood_risk_direction <- as.character(predict_property_data$geo_fs_flood_risk_direction)
+# predict_property_data$geo_fs_flood_risk_direction <- factor(predict_property_data$geo_fs_flood_risk_direction, levels = c("0", "1", "2", "3"))
+
+
+names(predict_property_data)
+
+str(predict_property_data)
+
+
+```
+
+
+```{r}
+historic_property_data <- historic_property_data %>% 
+  mutate(across(c("geo_ohare_noise", "geo_floodplain", "geo_withinmr100", "geo_withinmr101300"), as.logical))
+
+historic_property_data <- historic_property_data %>% 
+  mutate(across(c("char_heat", "char_oheat", "char_air", "char_attic_type", 
+                  "char_tp_plan", "char_gar1_size",
+                  "char_gar1_cnst", "char_gar1_area",
+                  "char_use", "char_type_resd",
+                  "char_ext_wall", "char_roof_cnst", "char_bsmt", "char_bsmt_fin",  "geo_fs_flood_factor"), as.factor))
+```
+
+```{r}
+str(historic_property_data)
+```
+
+
+
+#Model with linear regression no poly
+```{r}
+#check column
+names(historic_property_data)
+
+#check category or numeric 
+str(historic_property_data)
+
+#data partition
+set.seed(1)
+
+train_index <- sample(1:nrow(historic_property_data), 0.5 * nrow(historic_property_data))
+
+train.df <- historic_property_data[train_index, ]
+test.df <- historic_property_data[-train_index, ]
+
+dim(train.df)
+dim(test.df)
+
+names(historic_property_data)
+
+
+#no poly model 
+lm1 <- lm(sale_price ~ char_age + char_beds + char_frpl + char_fbath + char_hbath + char_bldg_sf + char_rooms + econ_tax_rate + econ_midincome + meta_nbhd + char_ext_wall + char_roof_cnst + char_bsmt + char_bsmt_fin + char_heat + char_oheat + char_air + char_attic_type + char_tp_plan + char_gar1_size + char_use + char_type_resd + geo_ohare_noise + geo_floodplain + geo_fs_flood_factor + geo_withinmr100 + geo_withinmr101300 + ind_garage + char_hd_sf + 
+char_gar1_cnst + char_gar1_area, data = train.df)
+
+#summary
+summary(lm1)
+#Residual standard error: 0.612 
+#Multiple R-squared:  0.6258,	Adjusted R-squared:  0.6254
+#p-value: < 2.2e-16
+
+#predicitons 
+prediction1 <- predict(lm1, data=test.df)
+
+#calculate MSE
+mse <- mean((test.df$sale_price - prediction1)^2)
+print(mse)
+```
+
+#Model with essential only
+
+```{r}
+
+lm2 <- lm(sale_price ~ char_hd_sf + char_rooms + char_beds + char_fbath + char_hbath +  meta_nbhd, data = train.df)
+
+names(historic_property_data)
+
+summary(lm2)
+#Residual standard error: 0.8625
+#Multiple R-squared:  0.2562,	Adjusted R-squared:  0.2561 
+# p-value: < 2.2e-16
+
+predictions2 <- predict(lm2, data=test.df)
+
+#calculate MSE
+mse2 <- mean((test.df$sale_price - predictions2)^2)
+print(mse2) 
+```
+
+#lasso regression
+```{r}
+
+set.seed(1) 
+
+# Extract response variable
+
+X_train <- model.matrix(~ char_age + char_beds + char_frpl + char_fbath + char_hbath + char_bldg_sf + char_rooms + econ_tax_rate + econ_midincome + meta_nbhd + char_ext_wall + char_roof_cnst + char_bsmt + char_bsmt_fin + char_heat + char_oheat + char_air + char_attic_type + char_tp_plan + char_gar1_size + char_use + char_type_resd + geo_ohare_noise + geo_floodplain + geo_fs_flood_factor +  geo_withinmr100 + geo_withinmr101300 + ind_garage + char_hd_sf + char_gar1_cnst + char_gar1_area - 1, data = train.df)
+ 
+X_test <- model.matrix(~ char_age + char_beds + char_frpl + char_fbath + char_hbath + char_bldg_sf + char_rooms + econ_tax_rate + econ_midincome + meta_nbhd + char_ext_wall + char_roof_cnst + char_bsmt + char_bsmt_fin + char_heat + char_oheat + char_air + char_attic_type + char_tp_plan + char_gar1_size + char_use + char_type_resd + geo_ohare_noise + geo_floodplain + geo_fs_flood_factor +  geo_withinmr100 + geo_withinmr101300 + ind_garage + char_hd_sf + char_gar1_cnst + char_gar1_area - 1, data = test.df)
+
+X_test_predict <- model.matrix(~ char_age + char_beds + char_frpl + char_fbath + char_hbath + char_bldg_sf + char_rooms + econ_tax_rate + econ_midincome + meta_nbhd + char_ext_wall + char_roof_cnst + char_bsmt + char_bsmt_fin + char_heat + char_oheat + char_air + char_attic_type + char_tp_plan + char_gar1_size + char_use + char_type_resd + geo_ohare_noise + geo_floodplain + geo_fs_flood_factor +  geo_withinmr100 + geo_withinmr101300 + ind_garage + char_hd_sf + char_gar1_cnst + char_gar1_area - 1, data = predict_property_data)
+
+y_train <- train.df$sale_price
+y_test <- test.df$sale_price
+
+str(predict_property_data)
+str(historic_property_data)
+
+dim(X_test_predict)
+
+# Create a Lasso regression model
+lasso_model <- cv.glmnet(x = X_train, y = y_train, alpha = 1)  # alpha = 1 for Lasso
+ 
+# Find the best lambda value
+lambda_best <- lasso_model$lambda.min
+ 
+# Make predictions on the test data
+predictions <- predict(lasso_model, newx = X_test, s = lambda_best)
+
+# Calculate MSE on the testing data
+mse_test <- mean((y_test - predictions)^2)
+mse_test
+ 
+```
+
+
+# Neural net
+
+```{r}
+# Assuming train.df and test.df are your dataframes
+
+# Combine train and test data for consistency in dummy encoding
+combined_df <- rbind(train.df, test.df)
+
+# Convert categorical variables to dummy variables
+dummy_data <- model.matrix(~ . - 1, data = combined_df)
+
+# Identify target variable
+target_variable <- "sale_price"
+
+# Split the data back into train and test sets
+train_dummy <- dummy_data[1:nrow(train.df), ]
+test_dummy <- dummy_data[(nrow(train.df) + 1):nrow(dummy_data), ]
+
+# Extract target variable
+y_train <- train.df[, target_variable]
+y_test <- test.df[, target_variable]
+
+# Build the neural network model
+model <- neuralnet(
+  sale_price ~ .,
+  data = train_dummy,
+  hidden = c(5, 3),  # Specify the number of nodes in each hidden layer
+  linear.output = TRUE  # Use linear activation function for regression
+)
+
+# Make predictions
+predictions <- compute(model, test_dummy)
+
+# Calculate MSE
+mse <- mean((predictions$net.result - y_test)^2)
+cat("Mean Squared Error (MSE):", mse, "\n")
+
+```
+
+
+# Predicting data based on lasso regression (lowest MSE)
+
+```{r}
+
+set.seed(1)
+
+predict_property_data <- predict_property_data[, -which(names(predict_property_data) == "meta_town_code")]
+
+X_test_predict <- model.matrix(~ char_age + char_beds + char_frpl + char_fbath + char_hbath + char_bldg_sf + char_rooms + econ_tax_rate + econ_midincome + meta_nbhd + char_ext_wall + char_roof_cnst + char_bsmt + char_bsmt_fin + char_heat + char_oheat + char_air + char_attic_type + char_tp_plan + char_gar1_size + char_use + char_type_resd + geo_ohare_noise + geo_floodplain + geo_fs_flood_factor + geo_withinmr100 + geo_withinmr101300 + ind_garage + char_hd_sf + char_gar1_cnst + char_gar1_area - 1, data = predict_property_data)
+
+# Make predictions on the test data
+predictions <- predict(lasso_model, newx = X_test_predict, s = lambda_best)
+
+#rescaling the data back
+rescaled_data <- min_price + predictions * (max_price - min_price)
+rescaled_data <- cbind(pid = predict_property_data$pid, assesed_value = rescaled_data)
+
+# Create a new dataframe with predicted values
+predicted_prices_df <- as.data.frame(rescaled_data)
+colnames(predicted_prices_df)[colnames(predicted_prices_df) == 's1'] <- 'assessed_value'
+
+head(predicted_prices_df)
+
+predicted_prices_df <- predicted_prices_df[predicted_prices_df$assessed_value >= 0, ]
+sum(predicted_prices_df$assessed_value < 0)
+
+```
+
+
+```{r}
+
+write.csv(predicted_prices_df, file="assessed_value.csv", row.names=FALSE)
+
+
+```
+
